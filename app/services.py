@@ -1,0 +1,248 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import Any
+
+from .gamification import award_xp, check_and_award_badges, record_activity, update_streak
+from .stage import record_assignment_submission, record_quiz_attempt
+from .store import (
+    Assignment,
+    Quiz,
+    QuizQuestion,
+    Submission,
+    next_submission_id,
+    save_submission,
+    utcnow,
+)
+
+
+def normalize_text(value: Any) -> str:
+    return "" if value is None else str(value).strip().lower()
+
+
+def normalize_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "t", "yes", "y", "1"}:
+            return True
+        if lowered in {"false", "f", "no", "n", "0"}:
+            return False
+    return None
+
+
+def question_public_view(question: QuizQuestion) -> dict[str, Any]:
+    return {
+        "id": question.id,
+        "prompt": question.prompt,
+        "question_type": question.question_type,
+        "options": question.options,
+        "points": question.points,
+    }
+
+
+def assignment_public_view(assignment: Assignment) -> dict[str, Any]:
+    return {
+        "id": assignment.id,
+        "title": assignment.title,
+        "description": assignment.description,
+        "instructions": assignment.instructions,
+        "pass_threshold": assignment.pass_threshold,
+    }
+
+
+def quiz_xp_for_score(score: float, pass_threshold: float) -> int:
+    if score >= 100:
+        return 100
+    if score >= pass_threshold:
+        return 50
+    return 0
+
+
+def create_quiz_attempt_submission(
+    *,
+    quiz: Quiz,
+    user_id: str,
+    answers: list[dict[str, Any]],
+) -> Submission:
+    answer_map = {answer["question_id"]: answer["answer"] for answer in answers}
+    results: list[dict[str, Any]] = []
+    earned_points = 0.0
+    total_points = 0.0
+    needs_manual_review = False
+
+    for question in quiz.questions:
+        total_points += question.points
+        provided_answer = answer_map.get(question.id)
+
+        if question.question_type == "mc":
+            is_correct = normalize_text(provided_answer) == normalize_text(question.correct_answer)
+            points = question.points if is_correct else 0.0
+            earned_points += points
+            results.append(
+                {
+                    "question_id": question.id,
+                    "question_type": question.question_type,
+                    "answer": provided_answer,
+                    "is_correct": is_correct,
+                    "needs_review": False,
+                    "earned_points": points,
+                }
+            )
+            continue
+
+        if question.question_type == "true_false":
+            provided_bool = normalize_bool(provided_answer)
+            is_correct = provided_bool is not None and provided_bool == normalize_bool(question.correct_answer)
+            points = question.points if is_correct else 0.0
+            earned_points += points
+            results.append(
+                {
+                    "question_id": question.id,
+                    "question_type": question.question_type,
+                    "answer": provided_answer,
+                    "is_correct": is_correct,
+                    "needs_review": False,
+                    "earned_points": points,
+                }
+            )
+            continue
+
+        needs_manual_review = True
+        results.append(
+            {
+                "question_id": question.id,
+                "question_type": question.question_type,
+                "answer": provided_answer,
+                "is_correct": None,
+                "needs_review": True,
+                "earned_points": 0.0,
+            }
+        )
+
+    score = round((earned_points / total_points) * 100, 2) if total_points else 0.0
+    passed = score >= quiz.pass_threshold
+    submission = Submission(
+        id=next_submission_id(),
+        kind="quiz",
+        user_id=user_id,
+        related_id=quiz.id,
+        status="pending_review" if needs_manual_review else "graded",
+        score=score,
+        passed=passed,
+        xp_awarded=0,
+        manual_review_required=needs_manual_review,
+        payload={
+            "quiz_id": quiz.id,
+            "quiz_title": quiz.title,
+            "answers": answers,
+            "results": results,
+            "provisional_score": score,
+            "pass_threshold": quiz.pass_threshold,
+        },
+    )
+
+    if not needs_manual_review:
+        submission.xp_awarded = quiz_xp_for_score(score, quiz.pass_threshold)
+        if submission.xp_awarded:
+            award_xp(user_id, submission.xp_awarded, "quiz_attempt")
+        update_streak(user_id)
+        record_activity(user_id, event_type="submission", source="quiz", score=score, passed=passed)
+        record_quiz_attempt(user_id, quiz.id, score, passed)
+        submission.badge_ids = check_and_award_badges(user_id)
+    else:
+        update_streak(user_id)
+        record_activity(user_id, event_type="submission", source="quiz")
+        record_quiz_attempt(user_id, quiz.id, score, None)
+
+    submission.updated_at = utcnow()
+    return save_submission(submission)
+
+
+def create_assignment_submission(
+    *,
+    assignment: Assignment,
+    user_id: str,
+    file_url: str | None,
+    text_answer: str | None,
+) -> Submission:
+    submission = Submission(
+        id=next_submission_id(),
+        kind="assignment",
+        user_id=user_id,
+        related_id=assignment.id,
+        status="pending_review",
+        score=None,
+        passed=None,
+        xp_awarded=20,
+        manual_review_required=True,
+        payload={
+            "assignment_id": assignment.id,
+            "assignment_title": assignment.title,
+            "file_url": file_url,
+            "text_answer": text_answer,
+            "pass_threshold": assignment.pass_threshold,
+        },
+    )
+    award_xp(user_id, 20, "assignment_submission")
+    update_streak(user_id)
+    record_activity(user_id, event_type="submission", source="assignment")
+    record_assignment_submission(user_id, assignment.id, None)
+    submission.badge_ids = check_and_award_badges(user_id)
+    submission.updated_at = utcnow()
+    return save_submission(submission)
+
+
+def finalize_grade(submission: Submission, score: float) -> Submission:
+    submission.score = round(score, 2)
+    submission.status = "graded"
+    submission.manual_review_required = False
+    submission.updated_at = utcnow()
+
+    if submission.kind == "quiz":
+        quiz_pass_threshold = float(submission.payload.get("pass_threshold", 70.0))
+        submission.passed = submission.score >= quiz_pass_threshold
+        current_xp = quiz_xp_for_score(submission.score, quiz_pass_threshold)
+        if current_xp > submission.xp_awarded:
+            award_xp(submission.user_id, current_xp - submission.xp_awarded, "quiz_final_grade")
+            submission.xp_awarded = current_xp
+        update_streak(submission.user_id)
+        record_activity(
+            submission.user_id,
+            event_type="grade_finalized",
+            source="quiz",
+            score=submission.score,
+            passed=bool(submission.passed),
+        )
+        record_quiz_attempt(submission.user_id, submission.related_id, submission.score, bool(submission.passed))
+        submission.badge_ids = check_and_award_badges(submission.user_id)
+        submission.payload["final_score"] = submission.score
+        return save_submission(submission)
+
+    if submission.kind == "assignment":
+        assignment_pass_threshold = float(submission.payload.get("pass_threshold", 70.0))
+        submission.passed = submission.score >= assignment_pass_threshold
+        update_streak(submission.user_id)
+        record_activity(
+            submission.user_id,
+            event_type="grade_finalized",
+            source="assignment",
+            score=submission.score,
+            passed=bool(submission.passed),
+        )
+        record_assignment_submission(submission.user_id, submission.related_id, submission.score)
+        submission.badge_ids = check_and_award_badges(submission.user_id)
+        submission.payload["final_score"] = submission.score
+        return save_submission(submission)
+
+    return save_submission(submission)
+
+
+def serialize_submission(submission: Submission) -> dict[str, Any]:
+    data = asdict(submission)
+    data["created_at"] = submission.created_at.isoformat()
+    data["updated_at"] = submission.updated_at.isoformat()
+    return data
