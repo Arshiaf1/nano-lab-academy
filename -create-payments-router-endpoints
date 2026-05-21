@@ -1,0 +1,13 @@
+  agents/add-download-notes-endpoint                 [m 15429c6 Implement core functionality for the nano lab academy platform
+  agents/admin-content-router-crud-setup             [m 16f7102 feat: add learner courses module with enrollment and lesson progress tracking
++ [36magents/create-payments-router-endpoints            [m 944a7db Implement core functionality for admin and learner routes, including submission grading and payment processing
+  agents/fastapi-auth-router-setup                   [m ce80221 Implement authentication router with user registration, login, and token management
+  agents/fastapi-backend-setup                       [m 453b4ad feat: Initialize FastAPI backend with comprehensive models and migrations
+  agents/gamification-module-creation                [m 4df55c3 feat: Implement learner courses functionality with quizzes, assignments, and exams
+  agents/job-listings-api-router-setup               [m 94e88ae stage3: Implement job listings and applications router
++ [36magents/quiz-assignment-router-enhancements         [m 08ef646 Initial commit
++ [36magents/quiz-assignment-router-enhancements-109aa846[m 08ef646 Initial commit
++ [36magents/quiz-assignment-router-enhancements-ef9bad2f[m 08ef646 Initial commit
+  agents/router-stage2-endpoints-implementation      [m 88db93e feat: implement Stage 2 enrollment, tasks, and evaluations endpoints
+  agents/section-completion-certification-flow       [m fdd8d7a [behind 1] feat: Implement admin and learner course functionality
+* [32mmain                                               [m 08ef646 [behind 3] Initial commit
