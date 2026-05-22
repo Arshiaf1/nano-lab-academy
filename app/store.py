@@ -112,6 +112,33 @@ enrollments: dict[str, Enrollment] = {}
 lesson_progress: dict[str, set[int]] = {}
 user_streak: dict[str, int] = {}
 
+stage1_deadline = datetime(2026, 5, 29, 18, 0, tzinfo=timezone.utc)
+
+stage2_lab_partners = [
+    {"id": "partner-1", "name": "Ava Chen", "skill": "Python automation", "availability": "Today"},
+    {"id": "partner-2", "name": "Mateo Silva", "skill": "UI debugging", "availability": "Tomorrow"},
+    {"id": "partner-3", "name": "Nadia Patel", "skill": "Data modeling", "availability": "This week"},
+]
+
+stage2_tasks = [
+    {"id": "task-1", "title": "Pair on a learning workflow", "status": "open"},
+    {"id": "task-2", "title": "Review a sample submission", "status": "in progress"},
+    {"id": "task-3", "title": "Submit supervisor reflection", "status": "open"},
+]
+
+stage2_supervisor_ratings = [
+    {"name": "Supervisor Ana", "rating": 4.8, "note": "Strong collaboration and consistent follow-through."},
+    {"name": "Supervisor Ben", "rating": 4.5, "note": "Clear reasoning and good partner communication."},
+]
+
+stage3_jobs = [
+    {"id": "job-1", "title": "Junior Lab Engineer", "location": "Remote", "type": "Full-time", "salary": "$78k-$92k"},
+    {"id": "job-2", "title": "Learning Operations Associate", "location": "Hybrid", "type": "Contract", "salary": "$42/hr"},
+    {"id": "job-3", "title": "Instructional Content Specialist", "location": "Remote", "type": "Part-time", "salary": "$58k-$66k"},
+]
+
+stage3_applications: list[dict[str, Any]] = []
+
 _submission_ids = count(1)
 _enrollment_ids = count(1)
 
@@ -192,6 +219,52 @@ def complete_lesson(user_id: str, lesson_id: int) -> dict[str, Any]:
         "xp": user_xp.get(user_id, 0),
         "streak": user_streak.get(user_id, 0),
         "badge_ids": badge_ids,
+    }
+
+
+def stage1_state(user_id: str = "me") -> dict[str, Any]:
+    locked = utcnow() >= stage1_deadline
+    return {
+        "stage1_deadline": stage1_deadline.isoformat(),
+        "stage1_locked": locked,
+        "remaining_seconds": max(0, int((stage1_deadline - utcnow()).total_seconds())),
+        "user_id": user_id,
+    }
+
+
+def stage2_state() -> dict[str, Any]:
+    return {
+        "lab_partners": stage2_lab_partners,
+        "tasks": stage2_tasks,
+        "supervisor_ratings": stage2_supervisor_ratings,
+    }
+
+
+def stage3_state() -> dict[str, Any]:
+    return {
+        "jobs": stage3_jobs,
+        "applications": stage3_applications,
+    }
+
+
+def submit_stage3_application(payload: dict[str, Any]) -> dict[str, Any]:
+    application = {
+        "id": len(stage3_applications) + 1,
+        "job_id": payload.get("job_id"),
+        "name": payload.get("name", ""),
+        "email": payload.get("email", ""),
+        "cover_letter": payload.get("cover_letter", ""),
+        "submitted_at": utcnow().isoformat(),
+    }
+    stage3_applications.append(application)
+    return application
+
+
+def submit_stage2_partner_selection(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "partner_id": payload.get("partner_id"),
+        "partner_name": next((partner["name"] for partner in stage2_lab_partners if partner["id"] == payload.get("partner_id")), None),
+        "selected_at": utcnow().isoformat(),
     }
 
 

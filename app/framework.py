@@ -23,6 +23,16 @@ class Route:
     handler: Callable[..., Any]
 
 
+@dataclass(slots=True)
+class Request:
+    method: str
+    path: str
+    query_params: dict[str, str]
+    headers: dict[str, str]
+    environ: dict[str, Any]
+    body: dict[str, Any]
+
+
 class Router:
     def __init__(self, prefix: str = "") -> None:
         self.prefix = prefix.rstrip("/")
@@ -60,6 +70,14 @@ class Application:
         raw_path = environ.get("PATH_INFO", "") or "/"
         query_params = {key: values[0] if values else "" for key, values in parse_qs(environ.get("QUERY_STRING", "")).items()}
         body = self._read_json_body(environ)
+        request = Request(
+            method=method,
+            path=raw_path,
+            query_params=query_params,
+            headers=self._extract_headers(environ),
+            environ=environ,
+            body=body,
+        )
 
         for route in self.routes:
             path_params = self._match(route.path, raw_path)
@@ -67,7 +85,7 @@ class Application:
                 continue
 
             try:
-                response = self._invoke(route.handler, path_params, query_params, body)
+                response = self._invoke(route.handler, path_params, query_params, body, request)
                 status_code = 200
             except HTTPException as exc:
                 status_code = exc.status_code
@@ -76,7 +94,11 @@ class Application:
                 status_code = 500
                 response = {"detail": str(exc)}
 
-            payload, content_type = self._serialize_response(response)
+            response, response_status_code, content_type_override = self._unwrap_response(response)
+            if response_status_code is not None:
+                status_code = response_status_code
+
+            payload, content_type = self._serialize_response(response, content_type_override)
             start_response(f"{status_code} {'OK' if status_code < 400 else 'ERROR'}", [("Content-Type", content_type), ("Content-Length", str(len(payload)))])
             return [payload]
 
@@ -84,12 +106,26 @@ class Application:
         start_response("404 ERROR", [("Content-Type", "application/json; charset=utf-8"), ("Content-Length", str(len(payload)))])
         return [payload]
 
-    def _serialize_response(self, response: Any) -> tuple[bytes, str]:
+    def _unwrap_response(self, response: Any) -> tuple[Any, int | None, str | None]:
+        if not isinstance(response, tuple):
+            return response, None, None
+
+        if len(response) == 2:
+            body, status_code = response
+            return body, int(status_code), None
+
+        if len(response) == 3:
+            body, status_code, content_type = response
+            return body, int(status_code), str(content_type)
+
+        return response, None, None
+
+    def _serialize_response(self, response: Any, content_type_override: str | None = None) -> tuple[bytes, str]:
         if isinstance(response, bytes):
-            return response, "application/octet-stream"
+            return response, content_type_override or "application/octet-stream"
         if isinstance(response, str):
-            return response.encode("utf-8"), "text/html; charset=utf-8"
-        return json.dumps(response, default=str).encode("utf-8"), "application/json; charset=utf-8"
+            return response.encode("utf-8"), content_type_override or "text/html; charset=utf-8"
+        return json.dumps(response, default=str).encode("utf-8"), content_type_override or "application/json; charset=utf-8"
 
     def _invoke(
         self,
@@ -97,6 +133,7 @@ class Application:
         path_params: dict[str, Any],
         query_params: dict[str, Any],
         body: dict[str, Any],
+        request: Request,
     ) -> Any:
         signature = inspect.signature(handler)
         type_hints = get_type_hints(handler)
@@ -104,6 +141,10 @@ class Application:
 
         if "payload" in signature.parameters:
             values["payload"] = body
+        if "request" in signature.parameters:
+            values["request"] = request
+        if "environ" in signature.parameters:
+            values["environ"] = request.environ
 
         filtered: dict[str, Any] = {}
         for name, parameter in signature.parameters.items():
@@ -142,3 +183,15 @@ class Application:
             return {}
 
         return json.loads(body_bytes.decode("utf-8"))
+
+    def _extract_headers(self, environ: dict[str, Any]) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        for key, value in environ.items():
+            if not isinstance(value, str):
+                continue
+            if key.startswith("HTTP_"):
+                header_name = key[5:].replace("_", "-").title()
+                headers[header_name] = value
+            elif key in {"CONTENT_TYPE", "CONTENT_LENGTH"}:
+                headers[key.replace("_", "-").title()] = value
+        return headers

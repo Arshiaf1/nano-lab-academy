@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from .admin_content import router as admin_router
 from .framework import Application, Route
+from .admin_frontend import router as admin_frontend_router
 from .frontend import router as frontend_router
 from .learner_courses import router as learner_router
 
 app = Application(title="nano-lab-academy")
 app.include_router(frontend_router)
 app.include_router(learner_router)
+app.include_router(admin_frontend_router)
 app.include_router(admin_router)
 
 

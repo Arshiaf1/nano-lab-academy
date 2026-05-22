@@ -21,6 +21,11 @@ from .store import (
     get_quiz,
     lesson_summary,
     list_assignment_submissions,
+    stage2_state,
+    stage3_state,
+    stage1_state,
+    submit_stage2_partner_selection,
+    submit_stage3_application,
 )
 
 
@@ -50,7 +55,9 @@ def course_tree(user_id: str = "me") -> dict[str, Any]:
 
 @router.get("/gamification/status")
 def my_gamification_status(user_id: str = "me") -> dict[str, Any]:
-    return gamification_status(user_id)
+    status = gamification_status(user_id)
+    status.update(stage1_state(user_id))
+    return status
 
 
 @router.post("/lessons/{lesson_id}/complete")
@@ -83,6 +90,30 @@ def download_notes(payload: dict[str, Any]) -> dict[str, Any]:
         "lesson_id": lesson.id,
         "filename": f"lesson-{lesson.id}-notes.txt",
         "content": lesson.notes,
+    }
+
+
+@router.get("/stage-2/data")
+def stage_two_data() -> dict[str, Any]:
+    return stage2_state()
+
+
+@router.post("/stage-2/select-partner")
+def stage_two_select_partner(payload: dict[str, Any]) -> dict[str, Any]:
+    return submit_stage2_partner_selection(payload)
+
+
+@router.get("/stage-3/data")
+def stage_three_data() -> dict[str, Any]:
+    return stage3_state()
+
+
+@router.post("/stage-3/apply")
+def stage_three_apply(payload: dict[str, Any]) -> dict[str, Any]:
+    application = submit_stage3_application(payload)
+    return {
+        "application": application,
+        "applications": stage3_state()["applications"],
     }
 
 

@@ -5,7 +5,7 @@ from html import escape
 from typing import Any
 
 from .framework import Router, HTTPException
-from .store import gamification_status, get_lesson, lesson_summary
+from .store import lesson_summary
 
 
 router = Router()
@@ -244,6 +244,43 @@ def _page_shell(title: str, body: str, script: str = "") -> str:
     }}
 
     .toast.show {{ opacity: 1; transform: translateY(0); }}
+
+    .overlay {{
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(19, 11, 7, 0.74);
+      backdrop-filter: blur(10px);
+    }}
+
+    .overlay[hidden] {{ display: none; }}
+
+    .overlay-card {{
+      width: min(620px, 100%);
+      padding: 28px;
+      border-radius: 28px;
+      background: rgba(255, 246, 238, 0.98);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      text-align: center;
+    }}
+
+    .overlay-card h2 {{ margin-top: 0; }}
+
+    .countdown {{
+      display: grid;
+      gap: 6px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(217, 111, 50, 0.12);
+      border: 1px solid rgba(217, 111, 50, 0.18);
+      margin-bottom: 16px;
+    }}
+
+    .countdown strong {{ font-size: 1.5rem; }}
   </style>
 </head>
 <body>
@@ -256,6 +293,8 @@ def _page_shell(title: str, body: str, script: str = "") -> str:
       <nav class="nav">
         <a href="/dashboard">Dashboard</a>
         <a href="/courses">Courses</a>
+        <a href="/stage-2">Stage 2</a>
+        <a href="/stage-3">Stage 3</a>
       </nav>
     </header>
     {body}
@@ -298,15 +337,60 @@ def dashboard_page() -> str:
         <h1>Your progress, plans, and rewards in one view.</h1>
         <p>The dashboard loads enrollment and gamification data from the live API so it always reflects your current learning state.</p>
       </section>
+      <section class="card countdown">
+        <span>Stage 1 deadline</span>
+        <strong id="stage-countdown">Loading...</strong>
+        <span class="muted" id="stage-countdown-detail">Checking availability</span>
+      </section>
       <section id="dashboard-root" class="stack"></section>
     </main>
+    <div id="stage-lock-overlay" class="overlay" hidden>
+      <div class="overlay-card">
+        <h2>Stage 1 expired, pay to continue</h2>
+        <p>Stage 1 access has ended. Unlock the remaining stages to keep moving through the academy.</p>
+        <button class="primary" id="pay-stage-unlock">Pay to continue</button>
+      </div>
+    </div>
     """
     script = """
     const root = document.getElementById("dashboard-root");
+    const overlay = document.getElementById("stage-lock-overlay");
+    const countdown = document.getElementById("stage-countdown");
+    const countdownDetail = document.getElementById("stage-countdown-detail");
+    const payStageUnlock = document.getElementById("pay-stage-unlock");
     const plans = [
       { id: "free", name: "Free", price: "$0", description: "Access the starter track and unlock the upgrade flow later." },
       { id: "pro", name: "Pro", price: "$29", description: "Unlock all lessons and keep the full outline available." },
     ];
+
+    function formatCountdown(totalSeconds) {
+      const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+      const days = Math.floor(safeSeconds / 86400);
+      const hours = Math.floor((safeSeconds % 86400) / 3600);
+      const minutes = Math.floor((safeSeconds % 3600) / 60);
+      const seconds = safeSeconds % 60;
+      return `${days}d ${hours.toString().padStart(2, "0")}h ${minutes.toString().padStart(2, "0")}m ${seconds.toString().padStart(2, "0")}s`;
+    }
+
+    function updateCountdown(deadlineIso) {
+      const deadline = new Date(deadlineIso);
+      const tick = () => {
+        const remaining = Math.max(0, Math.floor((deadline.getTime() - Date.now()) / 1000));
+        countdown.textContent = formatCountdown(remaining);
+        countdownDetail.textContent = remaining > 0 ? "Stage 1 is active" : "Stage 1 has expired";
+      };
+      tick();
+      window.clearInterval(window.__stageCountdownTimer);
+      window.__stageCountdownTimer = window.setInterval(tick, 1000);
+    }
+
+    function setStageLock(isLocked) {
+      overlay.hidden = !isLocked;
+    }
+
+    payStageUnlock.addEventListener("click", () => {
+      window.location.href = "/payments/create-checkout?type=stage_unlock";
+    });
 
     function renderPlanSelection() {
       root.innerHTML = `
@@ -396,6 +480,8 @@ def dashboard_page() -> str:
       try {
         const enrollment = await fetchJSON("/enrollments/my?user_id=me");
         const gamification = await fetchJSON("/gamification/status?user_id=me");
+        updateCountdown(gamification.stage1_deadline);
+        setStageLock(Boolean(gamification.stage1_locked));
         if (!enrollment.enrolled) {
           renderPlanSelection();
           return;
@@ -655,3 +741,226 @@ def lesson_page(lesson_id: int) -> str:
     });
     """
     return _page_shell(f"Lesson {lesson_id} - Nano Lab Academy", body, script)
+
+
+@router.get("/payments/create-checkout")
+def create_checkout(type: str = "stage_unlock") -> str:
+    body = f"""
+    <main class="stack">
+      <section class="hero">
+        <h1>Checkout</h1>
+        <p>This is a lightweight checkout landing page for the {escape(type)} flow.</p>
+      </section>
+      <article class="card">
+        <h2>Stage unlock checkout</h2>
+        <p>Payment processing is stubbed in this workspace. Use this screen to confirm the unlock intent and return to the dashboard.</p>
+        <div class="pill-row">
+          <a class="button primary" href="/dashboard">Return to dashboard</a>
+          <a class="button secondary" href="/stage-2">Open stage 2</a>
+        </div>
+      </article>
+    </main>
+    """
+    return _page_shell("Checkout - Nano Lab Academy", body)
+
+
+@router.get("/stage-2")
+def stage_two_page() -> str:
+    body = """
+    <main class="stack">
+      <section class="hero">
+        <h1>Stage 2</h1>
+        <p>Select a lab partner, track your tasks, and review supervisor ratings.</p>
+      </section>
+      <section id="stage2-root" class="stack"></section>
+    </main>
+    """
+    script = """
+    const root = document.getElementById("stage2-root");
+
+    function renderStageTwo(data) {
+      root.innerHTML = `
+        <div class="grid dashboard">
+          <article class="card">
+            <h2>Lab partners</h2>
+            <form id="partner-form" class="stack">
+              ${data.lab_partners.map((partner) => `
+                <label class="lesson-item" style="justify-content:flex-start; cursor:pointer;">
+                  <input type="radio" name="partner_id" value="${partner.id}" ${partner === data.lab_partners[0] ? "checked" : ""}>
+                  <div class="lesson-meta">
+                    <strong>${partner.name}</strong>
+                    <span class="muted">${partner.skill}</span>
+                    <span class="muted">Availability: ${partner.availability}</span>
+                  </div>
+                </label>
+              `).join("")}
+              <button class="primary" type="submit">Save partner</button>
+              <div id="partner-result" class="muted"></div>
+            </form>
+          </article>
+          <article class="card">
+            <h2>Tasks</h2>
+            <div class="stack">
+              ${data.tasks.map((task) => `
+                <div class="lesson-item">
+                  <div class="lesson-meta">
+                    <strong>${task.title}</strong>
+                    <span class="muted">Status: ${task.status}</span>
+                  </div>
+                  <button class="secondary" type="button">Open</button>
+                </div>
+              `).join("")}
+            </div>
+          </article>
+        </div>
+        <article class="card">
+          <h2>Supervisor ratings</h2>
+          <div class="lesson-list">
+            ${data.supervisor_ratings.map((rating) => `
+              <div class="lesson-item">
+                <div class="lesson-meta">
+                  <strong>${rating.name}</strong>
+                  <span class="muted">${rating.note}</span>
+                </div>
+                <span class="pill">${rating.rating.toFixed(1)} / 5</span>
+              </div>
+            `).join("")}
+          </div>
+        </article>
+      `;
+
+      document.getElementById("partner-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const selected = document.querySelector('input[name="partner_id"]:checked');
+        const result = document.getElementById("partner-result");
+        try {
+          const response = await postJSON("/stage-2/select-partner", { partner_id: selected ? selected.value : null });
+          result.textContent = `Selected ${response.partner_name || "partner"}`;
+          showToast("Lab partner saved");
+        } catch (error) {
+          result.textContent = error.message;
+        }
+      });
+    }
+
+    fetchJSON("/stage-2/data")
+      .then(renderStageTwo)
+      .catch((error) => {
+        root.innerHTML = `<article class="card"><h2>Stage 2 unavailable</h2><p>${error.message}</p></article>`;
+      });
+    """
+    return _page_shell("Stage 2 - Nano Lab Academy", body, script)
+
+
+@router.get("/stage-3")
+def stage_three_page() -> str:
+    body = """
+    <main class="stack">
+      <section class="hero">
+        <h1>Stage 3</h1>
+        <p>Explore the job board and submit applications directly from the page.</p>
+      </section>
+      <section id="stage3-root" class="stack"></section>
+    </main>
+    """
+    script = """
+    const root = document.getElementById("stage3-root");
+
+    function renderApplications(applications) {
+      if (!applications.length) {
+        return `<p class="muted">No applications submitted yet.</p>`;
+      }
+      return `
+        <div class="lesson-list">
+          ${applications.map((application) => `
+            <div class="lesson-item">
+              <div class="lesson-meta">
+                <strong>${application.name || "Anonymous applicant"}</strong>
+                <span class="muted">${application.email || "No email provided"}</span>
+              </div>
+              <span class="pill">Applied to ${application.job_id}</span>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderStageThree(data) {
+      root.innerHTML = `
+        <div class="grid dashboard">
+          <article class="card">
+            <h2>Job board</h2>
+            <div class="lesson-list">
+              ${data.jobs.map((job) => `
+                <div class="lesson-item">
+                  <div class="lesson-meta">
+                    <strong>${job.title}</strong>
+                    <span class="muted">${job.location} · ${job.type}</span>
+                    <span class="muted">${job.salary}</span>
+                  </div>
+                  <span class="pill">Open</span>
+                </div>
+              `).join("")}
+            </div>
+          </article>
+          <article class="card">
+            <h2>Application form</h2>
+            <form id="application-form" class="stack">
+              <label class="stack">
+                <span class="muted">Job</span>
+                <select name="job_id" style="padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(32,21,15,0.14);">
+                  ${data.jobs.map((job) => `<option value="${job.id}">${job.title}</option>`).join("")}
+                </select>
+              </label>
+              <label class="stack">
+                <span class="muted">Name</span>
+                <input name="name" placeholder="Your name" style="padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(32,21,15,0.14);">
+              </label>
+              <label class="stack">
+                <span class="muted">Email</span>
+                <input name="email" type="email" placeholder="you@example.com" style="padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(32,21,15,0.14);">
+              </label>
+              <label class="stack">
+                <span class="muted">Cover letter</span>
+                <textarea name="cover_letter" rows="5" placeholder="Tell the hiring team why you fit the role" style="padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(32,21,15,0.14);"></textarea>
+              </label>
+              <button class="primary" type="submit">Submit application</button>
+              <div id="application-result" class="muted"></div>
+            </form>
+          </article>
+        </div>
+        <article class="card">
+          <h2>Applications submitted</h2>
+          <div id="application-list">${renderApplications(data.applications)}</div>
+        </article>
+      `;
+
+      document.getElementById("application-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const payload = {
+          job_id: form.job_id.value,
+          name: form.name.value,
+          email: form.email.value,
+          cover_letter: form.cover_letter.value,
+        };
+        const result = document.getElementById("application-result");
+        try {
+          const response = await postJSON("/stage-3/apply", payload);
+          result.textContent = `Application submitted for ${response.application.job_id}`;
+          document.getElementById("application-list").innerHTML = renderApplications(response.applications);
+          showToast("Application submitted");
+          form.reset();
+        } catch (error) {
+          result.textContent = error.message;
+        }
+      });
+    }
+
+    fetchJSON("/stage-3/data")
+      .then(renderStageThree)
+      .catch((error) => {
+        root.innerHTML = `<article class="card"><h2>Stage 3 unavailable</h2><p>${error.message}</p></article>`;
+      });
+    """
+    return _page_shell("Stage 3 - Nano Lab Academy", body, script)

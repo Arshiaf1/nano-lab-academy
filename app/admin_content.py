@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from .auth import require_admin
 from .framework import HTTPException, Router
+from .framework import Request
 
 from .services import finalize_grade, serialize_submission
 from .store import get_submission, list_pending_submissions
@@ -12,12 +14,14 @@ router = Router(prefix="/admin")
 
 
 @router.get("/submissions/pending")
-def get_pending_submissions() -> list[dict[str, Any]]:
+def get_pending_submissions(request: Request) -> list[dict[str, Any]]:
+    require_admin(request)
     return [serialize_submission(submission) for submission in list_pending_submissions()]
 
 
 @router.post("/submissions/{submission_id}/grade")
-def grade_submission(submission_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+def grade_submission(submission_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request)
     submission = get_submission(submission_id)
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found")
