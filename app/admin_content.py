@@ -7,7 +7,7 @@ from .framework import HTTPException, Router
 from .framework import Request
 
 from .services import finalize_grade, serialize_submission
-from .store import get_submission, list_pending_submissions
+from .store import evaluate_stage2, get_submission, list_pending_submissions
 
 
 router = Router(prefix="/admin")
@@ -46,4 +46,27 @@ def grade_submission(submission_id: int, payload: dict[str, Any], request: Reque
         "xp_awarded": graded_submission.xp_awarded,
         "badge_ids": graded_submission.badge_ids,
         "submission": serialize_submission(graded_submission),
+    }
+
+
+@router.post("/stage2/evaluate")
+def evaluate_stage2_enrollment(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_admin(request)
+    user_id = str(payload.get("user_id", "me"))
+
+    try:
+        score = float(payload.get("score", 0))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="score must be a number") from exc
+
+    approved = bool(payload.get("approved", score >= 80))
+    evaluation = evaluate_stage2(
+        user_id,
+        score=score,
+        approved=approved,
+        evaluator=str(payload.get("evaluator", "admin")),
+        comments=str(payload.get("comments", "")),
+    )
+    return {
+        "evaluation": evaluation,
     }

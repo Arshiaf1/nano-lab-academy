@@ -291,11 +291,13 @@ def _page_shell(title: str, body: str, script: str = "") -> str:
         <span>Freemium course flow, lessons, quizzes, assignments, and progress tracking.</span>
       </div>
       <nav class="nav">
+        <a href="/register">Register</a>
         <a href="/dashboard">Dashboard</a>
         <a href="/courses">Courses</a>
         <a href="/stage-2">Stage 2</a>
         <a href="/stage-3">Stage 3</a>
       </nav>
+      <span id="learner-pill" class="pill" hidden></span>
     </header>
     {body}
   </div>
@@ -323,6 +325,19 @@ def _page_shell(title: str, body: str, script: str = "") -> str:
     async function postJSON(url, payload) {{
       return fetchJSON(url, {{ method: "POST", body: JSON.stringify(payload || {{}}) }});
     }}
+    function currentLearnerId() {{
+      return window.localStorage.getItem("nano_lab_learner_id") || "me";
+    }}
+    function setCurrentLearnerId(userId) {{
+      if (!userId) return;
+      window.localStorage.setItem("nano_lab_learner_id", userId);
+      const pill = document.getElementById("learner-pill");
+      if (pill) {{
+        pill.hidden = false;
+        pill.textContent = `Learner ${userId}`;
+      }}
+    }}
+    setCurrentLearnerId(currentLearnerId());
     {script}
   </script>
 </body>
@@ -359,8 +374,9 @@ def dashboard_page() -> str:
     const countdownDetail = document.getElementById("stage-countdown-detail");
     const payStageUnlock = document.getElementById("pay-stage-unlock");
     const plans = [
-      { id: "free", name: "Free", price: "$0", description: "Access the starter track and unlock the upgrade flow later." },
-      { id: "pro", name: "Pro", price: "$29", description: "Unlock all lessons and keep the full outline available." },
+      { id: "basics", name: "Basics", price: "$0", description: "Register the learner and unlock the starter track." },
+      { id: "pro", name: "Pro", price: "$29", description: "Unlock premium lessons and the stage unlock flow." },
+      { id: "ultra", name: "Ultra", price: "$49", description: "Unlock the advanced track and job marketplace." },
     ];
 
     function formatCountdown(totalSeconds) {
@@ -396,7 +412,7 @@ def dashboard_page() -> str:
       root.innerHTML = `
         <article class="card">
           <h2>Choose a plan</h2>
-          <p>You are not enrolled yet. Pick a plan to unlock the course experience.</p>
+          <p>You are not enrolled yet. Pick Basics to start, then upgrade when you are ready.</p>
           <div class="plan-grid">
             ${plans.map((plan) => `
               <div class="plan">
@@ -413,7 +429,7 @@ def dashboard_page() -> str:
         button.addEventListener("click", async () => {
           button.disabled = true;
           try {
-            await postJSON("/enrollments/enroll", { plan_tier: button.dataset.plan, user_id: "me" });
+            await postJSON("/enrollments/enroll", { plan_tier: button.dataset.plan, user_id: currentLearnerId() });
             showToast("Enrollment updated");
             await loadDashboard();
           } catch (error) {
@@ -478,8 +494,9 @@ def dashboard_page() -> str:
 
     async function loadDashboard() {
       try {
-        const enrollment = await fetchJSON("/enrollments/my?user_id=me");
-        const gamification = await fetchJSON("/gamification/status?user_id=me");
+        const learnerId = currentLearnerId();
+        const enrollment = await fetchJSON(`/courses/my?user_id=${encodeURIComponent(learnerId)}`);
+        const gamification = await fetchJSON(`/gamification/status?user_id=${encodeURIComponent(learnerId)}`);
         updateCountdown(gamification.stage1_deadline);
         setStageLock(Boolean(gamification.stage1_locked));
         if (!enrollment.enrolled) {
@@ -495,6 +512,71 @@ def dashboard_page() -> str:
     loadDashboard();
     """
     return _page_shell("Dashboard - Nano Lab Academy", body, script)
+
+
+@router.get("/register")
+def register_page() -> str:
+    body = """
+    <main class="grid lesson">
+      <section class="stack">
+        <article class="hero">
+          <h1>Register learner</h1>
+          <p>Create a learner profile, then enroll in the Basics plan from the dashboard.</p>
+        </article>
+        <article class="card stack">
+          <form id="register-form" class="stack">
+            <label class="stack">
+              <span class="muted">Full name</span>
+              <input name="full_name" placeholder="Your full name">
+            </label>
+            <label class="stack">
+              <span class="muted">Email</span>
+              <input name="email" type="email" placeholder="you@example.com">
+            </label>
+            <label class="stack">
+              <span class="muted">Learner ID</span>
+              <input name="user_id" placeholder="learner-001">
+            </label>
+            <button class="primary" type="submit">Register learner</button>
+            <div id="register-result" class="muted"></div>
+          </form>
+        </article>
+      </section>
+      <aside class="stack">
+        <article class="card">
+          <h2>Next step</h2>
+          <p class="muted">After registration, open the dashboard and choose the Basics plan. That will keep the learner on the starter track until the checkout webhook upgrades the plan.</p>
+        </article>
+      </aside>
+    </main>
+    """
+    script = """
+    const form = document.getElementById("register-form");
+    const result = document.getElementById("register-result");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(form);
+      const payload = {
+        user_id: String(formData.get("user_id") || "").trim(),
+        full_name: String(formData.get("full_name") || "").trim(),
+        email: String(formData.get("email") || "").trim(),
+        plan_tier: "basics",
+      };
+
+      result.textContent = "Registering...";
+      try {
+        const response = await postJSON("/auth/register", payload);
+        setCurrentLearnerId(response.user.user_id);
+        result.textContent = `Registered ${response.user.user_id}. Open the dashboard to enroll in Basics.`;
+        showToast("Learner registered");
+        window.location.href = "/dashboard";
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    });
+    """
+    return _page_shell("Register - Nano Lab Academy", body, script)
 
 
 @router.get("/courses")
@@ -517,7 +599,8 @@ def courses_page() -> str:
 
     function renderLesson(lesson) {
       const lessonLink = `<a class="button primary" href="/lessons/${lesson.id}">Open lesson</a>`;
-      const lockedBadge = lesson.locked ? `<span class="lock">Locked for free plan</span>` : `<span class="success">Available</span>`;
+      const lockedBadge = lesson.locked ? `<span class="lock">Locked for Basics plan</span>` : `<span class="success">Available</span>`;
+      const completedBadge = lesson.completed ? `<span class="badge">Completed</span>` : "";
       const action = lesson.locked ? upgradeButton() : lessonLink;
       return `
         <div class="lesson-item">
@@ -525,6 +608,7 @@ def courses_page() -> str:
             <strong>${lesson.title}</strong>
             <span class="muted">${lesson.description}</span>
             ${lockedBadge}
+            ${completedBadge}
           </div>
           <div class="pill-row">
             ${action}
@@ -541,10 +625,17 @@ def courses_page() -> str:
           <div class="outline">
             ${course.outline.map((section) => `
               <section class="section">
-                <h3>${section.title}</h3>
+                <div class="pill-row">
+                  <h3>${section.title}</h3>
+                  ${section.completed ? `<span class="badge">Section complete</span>` : ""}
+                  ${section.confirmed ? `<span class="badge">Confirmed</span>` : ""}
+                </div>
                 <p>${section.description || ""}</p>
                 <div class="lesson-list">
                   ${section.children.map(renderLesson).join("")}
+                </div>
+                <div class="pill-row">
+                  <button class="secondary" type="button" data-confirm-section="${section.id}" ${section.completed ? "" : "disabled"}>Confirm section</button>
                 </div>
               </section>
             `).join("")}
@@ -555,8 +646,22 @@ def courses_page() -> str:
         button.addEventListener("click", async () => {
           button.disabled = true;
           try {
-            await postJSON("/enrollments/enroll", { plan_tier: "pro", user_id: "me" });
+            await postJSON("/enrollments/enroll", { plan_tier: "pro", user_id: currentLearnerId() });
             showToast("Upgrade applied");
+            await loadCourses();
+          } catch (error) {
+            showToast(error.message);
+          } finally {
+            button.disabled = false;
+          }
+        });
+      });
+      root.querySelectorAll("button[data-confirm-section]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            await postJSON(`/sections/${button.dataset.confirmSection}/confirm`, { user_id: currentLearnerId() });
+            showToast("Section confirmed");
             await loadCourses();
           } catch (error) {
             showToast(error.message);
@@ -569,7 +674,7 @@ def courses_page() -> str:
 
     async function loadCourses() {
       try {
-        const enrollment = await fetchJSON("/enrollments/my?user_id=me");
+        const enrollment = await fetchJSON(`/courses/my?user_id=${encodeURIComponent(currentLearnerId())}`);
         if (!enrollment.enrolled) {
           root.innerHTML = `
             <article class="card">
@@ -606,7 +711,7 @@ def lesson_page(lesson_id: int) -> str:
         <article class="hero">
           <h1>{escape(lesson['title'])}</h1>
           <p>{escape(lesson['description'])}</p>
-          {'<p class="lock">This lesson is locked on the free plan.</p>' if lesson['locked'] else ''}
+          {'<p class="lock">This lesson is locked on the Basics plan.</p>' if lesson['locked'] else ''}
         </article>
         <article class="card stack">
           <div class="video">
@@ -651,10 +756,7 @@ def lesson_page(lesson_id: int) -> str:
     }
 
     async function downloadNotes() {
-      const response = await fetchJSON("/download-notes", {
-        method: "POST",
-        body: JSON.stringify({ lesson_id: lesson.id, user_id: "me" }),
-      });
+      const response = await fetchJSON(`/lessons/${lesson.id}/download-notes?user_id=${encodeURIComponent(currentLearnerId())}`);
       const blob = new Blob([response.content], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -666,7 +768,7 @@ def lesson_page(lesson_id: int) -> str:
     }
 
     async function markComplete() {
-      const response = await postJSON(`/lessons/${lesson.id}/complete`, { user_id: "me" });
+      const response = await postJSON(`/lessons/${lesson.id}/progress`, { user_id: currentLearnerId(), watched: true, completed: true });
       setStatus(`Completed lesson ${lesson.id}. XP: ${response.gamification.xp}, streak: ${response.gamification.streak}`);
       showToast("Lesson completed");
     }
@@ -730,7 +832,7 @@ def lesson_page(lesson_id: int) -> str:
           const selected = document.querySelector(`input[name="question-${question.id}"]:checked`);
           return { question_id: question.id, answer: selected ? selected.value : null };
         });
-        const result = await postJSON(`/quizzes/${lesson.quiz_id}/attempt`, { user_id: "me", answers });
+        const result = await postJSON(`/quizzes/${lesson.quiz_id}/attempt`, { user_id: currentLearnerId(), answers });
         document.getElementById("quiz-result").textContent = `Score ${result.score}%, XP ${result.xp_awarded}, passed: ${result.passed ? "yes" : "no"}`;
         showToast("Quiz submitted");
       });
@@ -743,25 +845,160 @@ def lesson_page(lesson_id: int) -> str:
     return _page_shell(f"Lesson {lesson_id} - Nano Lab Academy", body, script)
 
 
+@router.get("/assignments/{assignment_id}")
+def assignment_page(assignment_id: int) -> str:
+    body = f"""
+    <main class="stack">
+      <section class="hero">
+        <h1>Assignment {assignment_id}</h1>
+        <p>Submit your written response or a file URL through the live API.</p>
+      </section>
+      <section class="grid lesson">
+        <article class="card stack">
+          <h2 id="assignment-title">Loading assignment...</h2>
+          <p id="assignment-description" class="muted"></p>
+          <p id="assignment-instructions"></p>
+          <form id="assignment-form" class="stack">
+            <label class="stack">
+              <span class="muted">File URL</span>
+              <input name="file_url" placeholder="https://example.com/submission.pdf">
+            </label>
+            <label class="stack">
+              <span class="muted">Text answer</span>
+              <textarea name="text_answer" placeholder="Paste your response here"></textarea>
+            </label>
+            <button class="primary" type="submit">Submit assignment</button>
+            <div id="assignment-result" class="muted"></div>
+          </form>
+        </article>
+        <aside class="stack">
+          <article class="card">
+            <h2>Status</h2>
+            <div id="assignment-status" class="muted">Waiting for submission.</div>
+          </article>
+          <article class="card">
+            <h2>Plan check</h2>
+            <p class="muted">Use the dashboard to register and upgrade before submitting higher-stage work.</p>
+          </article>
+        </aside>
+      </section>
+    </main>
+    """
+    script = f"""
+    const assignmentId = {assignment_id};
+    const title = document.getElementById("assignment-title");
+    const description = document.getElementById("assignment-description");
+    const instructions = document.getElementById("assignment-instructions");
+    const form = document.getElementById("assignment-form");
+    const result = document.getElementById("assignment-result");
+    const status = document.getElementById("assignment-status");
+
+    fetchJSON(`/assignments/${{assignmentId}}`)
+      .then((assignment) => {{
+        title.textContent = assignment.title;
+        description.textContent = assignment.description || "";
+        instructions.textContent = assignment.instructions || "";
+      }})
+      .catch((error) => {{
+        title.textContent = "Assignment unavailable";
+        description.textContent = error.message;
+      }});
+
+    form.addEventListener("submit", async (event) => {{
+      event.preventDefault();
+      const formData = new FormData(form);
+      const payload = {{
+        user_id: currentLearnerId(),
+        file_url: String(formData.get("file_url") || "").trim(),
+        text_answer: String(formData.get("text_answer") || "").trim(),
+      }};
+      result.textContent = "Submitting...";
+      try {{
+        const response = await postJSON(`/assignments/${{assignmentId}}/submit`, payload);
+        result.textContent = `Submitted. XP ${{response.xp_awarded}}, status ${{response.submission.status}}`;
+        status.textContent = `Submission ${{response.submission.id}} recorded.`;
+        showToast("Assignment submitted");
+      }} catch (error) {{
+        result.textContent = error.message;
+      }}
+    }});
+    """
+    return _page_shell(f"Assignment {assignment_id} - Nano Lab Academy", body, script)
+
+
 @router.get("/payments/create-checkout")
 def create_checkout(type: str = "stage_unlock") -> str:
     body = f"""
     <main class="stack">
       <section class="hero">
         <h1>Checkout</h1>
-        <p>This is a lightweight checkout landing page for the {escape(type)} flow.</p>
+        <p>This page creates a real in-memory payment record and can simulate a successful webhook.</p>
       </section>
-      <article class="card">
-        <h2>Stage unlock checkout</h2>
-        <p>Payment processing is stubbed in this workspace. Use this screen to confirm the unlock intent and return to the dashboard.</p>
-        <div class="pill-row">
-          <a class="button primary" href="/dashboard">Return to dashboard</a>
-          <a class="button secondary" href="/stage-2">Open stage 2</a>
-        </div>
-      </article>
+      <div class="grid lesson">
+        <article class="card stack">
+          <h2>Payment intent</h2>
+          <p class="muted">Type: {escape(type)}</p>
+          <div id="checkout-summary" class="stack"></div>
+          <div class="pill-row">
+            <button class="primary" id="simulate-webhook" type="button">Simulate webhook</button>
+            <a class="button secondary" href="/dashboard">Back to dashboard</a>
+          </div>
+          <div id="checkout-result" class="muted"></div>
+        </article>
+        <aside class="stack">
+          <article class="card">
+            <h2>What this does</h2>
+            <p class="muted">Creates a pending payment for the current learner, then marks it succeeded and upgrades the plan when the webhook fires.</p>
+          </article>
+        </aside>
+      </div>
     </main>
     """
-    return _page_shell("Checkout - Nano Lab Academy", body)
+    script = f"""
+    const checkoutSummary = document.getElementById("checkout-summary");
+    const checkoutResult = document.getElementById("checkout-result");
+    const webhookButton = document.getElementById("simulate-webhook");
+    let checkoutReference = null;
+
+    async function createIntent() {{
+      const response = await postJSON("/payments/create-checkout", {{
+        user_id: currentLearnerId(),
+        type: {json.dumps(type)},
+        amount: {29 if type == "stage_unlock" else 0},
+        plan_tier: "pro",
+      }});
+      checkoutReference = response.payment.reference;
+      checkoutSummary.innerHTML = `
+        <div class="section"><strong>Reference</strong><div>${{response.payment.reference}}</div></div>
+        <div class="section"><strong>Status</strong><div>${{response.payment.status}}</div></div>
+        <div class="section"><strong>Amount</strong><div>${{response.payment.currency}} ${{response.payment.amount}}</div></div>
+      `;
+      checkoutResult.textContent = "Payment intent created.";
+    }}
+
+    webhookButton.addEventListener("click", async () => {{
+      webhookButton.disabled = true;
+      try {{
+        const response = await postJSON("/payments/webhook", {{
+          reference: checkoutReference,
+          status: "succeeded",
+          source: "frontend-simulator",
+          user_id: currentLearnerId(),
+        }});
+        checkoutResult.textContent = `Webhook processed. Plan is now ${{response.enrollment.plan_tier}}.`;
+        showToast("Payment webhook simulated");
+      }} catch (error) {{
+        checkoutResult.textContent = error.message;
+      }} finally {{
+        webhookButton.disabled = false;
+      }}
+    }});
+
+    createIntent().catch((error) => {{
+      checkoutResult.textContent = error.message;
+    }});
+    """
+    return _page_shell("Checkout - Nano Lab Academy", body, script)
 
 
 @router.get("/stage-2")
@@ -778,15 +1015,16 @@ def stage_two_page() -> str:
     script = """
     const root = document.getElementById("stage2-root");
 
-    function renderStageTwo(data) {
+    function renderStageTwo(partnerData, statusData) {
+      const unlocked = Boolean(statusData.stage3_unlocked);
       root.innerHTML = `
         <div class="grid dashboard">
           <article class="card">
             <h2>Lab partners</h2>
             <form id="partner-form" class="stack">
-              ${data.lab_partners.map((partner) => `
+              ${partnerData.lab_partners.map((partner) => `
                 <label class="lesson-item" style="justify-content:flex-start; cursor:pointer;">
-                  <input type="radio" name="partner_id" value="${partner.id}" ${partner === data.lab_partners[0] ? "checked" : ""}>
+                  <input type="radio" name="partner_id" value="${partner.id}" ${statusData.enrollment?.lab_partner_id === partner.id ? "checked" : ""}>
                   <div class="lesson-meta">
                     <strong>${partner.name}</strong>
                     <span class="muted">${partner.skill}</span>
@@ -794,29 +1032,37 @@ def stage_two_page() -> str:
                   </div>
                 </label>
               `).join("")}
-              <button class="primary" type="submit">Save partner</button>
+              <button class="primary" type="submit">Enroll in Stage 2</button>
               <div id="partner-result" class="muted"></div>
             </form>
           </article>
           <article class="card">
             <h2>Tasks</h2>
             <div class="stack">
-              ${data.tasks.map((task) => `
+              ${partnerData.tasks.map((task) => `
                 <div class="lesson-item">
                   <div class="lesson-meta">
                     <strong>${task.title}</strong>
                     <span class="muted">Status: ${task.status}</span>
                   </div>
-                  <button class="secondary" type="button">Open</button>
+                  <button class="secondary" type="button" data-task-submit="${task.id}">Submit</button>
                 </div>
               `).join("")}
             </div>
           </article>
         </div>
         <article class="card">
+          <h2>Stage 2 status</h2>
+          <div class="pill-row">
+            <span class="pill">${statusData.enrolled ? "Enrolled" : "Not enrolled"}</span>
+            <span class="pill">${unlocked ? "Stage 3 unlocked" : "Stage 3 locked"}</span>
+            ${statusData.evaluation ? `<span class="pill">Score ${statusData.evaluation.score}</span>` : ""}
+          </div>
+        </article>
+        <article class="card">
           <h2>Supervisor ratings</h2>
           <div class="lesson-list">
-            ${data.supervisor_ratings.map((rating) => `
+            ${partnerData.supervisor_ratings.map((rating) => `
               <div class="lesson-item">
                 <div class="lesson-meta">
                   <strong>${rating.name}</strong>
@@ -834,20 +1080,44 @@ def stage_two_page() -> str:
         const selected = document.querySelector('input[name="partner_id"]:checked');
         const result = document.getElementById("partner-result");
         try {
-          const response = await postJSON("/stage-2/select-partner", { partner_id: selected ? selected.value : null });
-          result.textContent = `Selected ${response.partner_name || "partner"}`;
-          showToast("Lab partner saved");
+          const response = await postJSON("/stage2/enroll", { user_id: currentLearnerId(), lab_partner_id: selected ? selected.value : null });
+          result.textContent = `Selected ${response.enrollment.lab_partner_name || "partner"}`;
+          showToast("Stage 2 enrollment saved");
+          await loadStageTwo();
         } catch (error) {
           result.textContent = error.message;
         }
       });
+
+      root.querySelectorAll("button[data-task-submit]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            await postJSON(`/stage2/tasks/${button.dataset.taskSubmit}/submit`, { user_id: currentLearnerId(), notes: "Submitted from the learner UI" });
+            showToast("Stage 2 task submitted");
+            await loadStageTwo();
+          } catch (error) {
+            showToast(error.message);
+          } finally {
+            button.disabled = false;
+          }
+        });
+      });
     }
 
-    fetchJSON("/stage-2/data")
-      .then(renderStageTwo)
-      .catch((error) => {
+    async function loadStageTwo() {
+      try {
+        const [partnerData, statusData] = await Promise.all([
+          fetchJSON("/stage2/lab-partners"),
+          fetchJSON(`/stage2/my-status?user_id=${encodeURIComponent(currentLearnerId())}`),
+        ]);
+        renderStageTwo(partnerData, statusData);
+      } catch (error) {
         root.innerHTML = `<article class="card"><h2>Stage 2 unavailable</h2><p>${error.message}</p></article>`;
-      });
+      }
+    }
+
+    loadStageTwo();
     """
     return _page_shell("Stage 2 - Nano Lab Academy", body, script)
 
@@ -890,6 +1160,7 @@ def stage_three_page() -> str:
         <div class="grid dashboard">
           <article class="card">
             <h2>Job board</h2>
+            ${data.unlocked ? `<div class="pill-row"><span class="pill">Stage 3 unlocked</span></div>` : `<p class="lock">Stage 3 is locked until Stage 2 evaluation passes.</p>`}
             <div class="lesson-list">
               ${data.jobs.map((job) => `
                 <div class="lesson-item">
@@ -898,7 +1169,7 @@ def stage_three_page() -> str:
                     <span class="muted">${job.location} · ${job.type}</span>
                     <span class="muted">${job.salary}</span>
                   </div>
-                  <span class="pill">Open</span>
+                  <button class="secondary" type="button" data-apply-job="${job.id}" ${data.unlocked ? "" : "disabled"}>Apply</button>
                 </div>
               `).join("")}
             </div>
@@ -924,7 +1195,7 @@ def stage_three_page() -> str:
                 <span class="muted">Cover letter</span>
                 <textarea name="cover_letter" rows="5" placeholder="Tell the hiring team why you fit the role" style="padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(32,21,15,0.14);"></textarea>
               </label>
-              <button class="primary" type="submit">Submit application</button>
+              <button class="primary" type="submit" ${data.unlocked ? "" : "disabled"}>Submit application</button>
               <div id="application-result" class="muted"></div>
             </form>
           </article>
@@ -943,10 +1214,11 @@ def stage_three_page() -> str:
           name: form.name.value,
           email: form.email.value,
           cover_letter: form.cover_letter.value,
+          user_id: currentLearnerId(),
         };
         const result = document.getElementById("application-result");
         try {
-          const response = await postJSON("/stage-3/apply", payload);
+          const response = await postJSON(`/jobs/${payload.job_id}/apply`, payload);
           result.textContent = `Application submitted for ${response.application.job_id}`;
           document.getElementById("application-list").innerHTML = renderApplications(response.applications);
           showToast("Application submitted");
@@ -955,9 +1227,29 @@ def stage_three_page() -> str:
           result.textContent = error.message;
         }
       });
+
+      root.querySelectorAll("button[data-apply-job]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const response = await postJSON(`/jobs/${button.dataset.applyJob}/apply`, {
+              user_id: currentLearnerId(),
+              name: document.querySelector('#application-form [name="name"]').value,
+              email: document.querySelector('#application-form [name="email"]').value,
+              cover_letter: document.querySelector('#application-form [name="cover_letter"]').value,
+            });
+            document.getElementById("application-list").innerHTML = renderApplications(response.applications);
+            showToast("Application submitted");
+          } catch (error) {
+            showToast(error.message);
+          } finally {
+            button.disabled = false;
+          }
+        });
+      });
     }
 
-    fetchJSON("/stage-3/data")
+    fetchJSON(`/jobs?user_id=${encodeURIComponent(currentLearnerId())}`)
       .then(renderStageThree)
       .catch((error) => {
         root.innerHTML = `<article class="card"><h2>Stage 3 unavailable</h2><p>${error.message}</p></article>`;

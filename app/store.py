@@ -9,7 +9,7 @@ from typing import Any, Literal
 QuestionType = Literal["mc", "true_false", "short_answer"]
 SubmissionKind = Literal["quiz", "assignment"]
 SubmissionStatus = Literal["pending_review", "graded"]
-PlanTier = Literal["free", "pro"]
+PlanTier = Literal["free", "basics", "pro", "ultra"]
 
 
 def utcnow() -> datetime:
@@ -111,6 +111,13 @@ lessons: dict[int, CourseLesson] = {}
 enrollments: dict[str, Enrollment] = {}
 lesson_progress: dict[str, set[int]] = {}
 user_streak: dict[str, int] = {}
+registered_users: dict[str, dict[str, Any]] = {}
+payments: list[dict[str, Any]] = []
+section_confirmations: dict[str, set[int]] = {}
+stage2_enrollments: dict[str, dict[str, Any]] = {}
+stage2_task_submissions: list[dict[str, Any]] = []
+stage2_evaluations: dict[str, dict[str, Any]] = {}
+certifications: dict[str, list[dict[str, Any]]] = {}
 
 stage1_deadline = datetime(2026, 5, 29, 18, 0, tzinfo=timezone.utc)
 
@@ -141,6 +148,8 @@ stage3_applications: list[dict[str, Any]] = []
 
 _submission_ids = count(1)
 _enrollment_ids = count(1)
+_payment_ids = count(1)
+_stage2_enrollment_ids = count(1)
 
 
 def next_submission_id() -> int:
@@ -151,9 +160,205 @@ def next_enrollment_id() -> int:
     return next(_enrollment_ids)
 
 
+def next_payment_id() -> int:
+    return next(_payment_ids)
+
+
+def next_stage2_enrollment_id() -> int:
+    return next(_stage2_enrollment_ids)
+
+
 def add_xp(user_id: str, amount: int) -> int:
     user_xp[user_id] = user_xp.get(user_id, 0) + amount
     return user_xp[user_id]
+
+
+def normalize_plan_tier(plan_tier: str) -> PlanTier:
+    normalized = plan_tier.strip().lower()
+    if normalized in {"free", "basic", "basics"}:
+        return "basics"
+    if normalized in {"pro", "premium"}:
+        return "pro"
+    if normalized in {"ultra", "elite"}:
+        return "ultra"
+    raise ValueError(f"Unsupported plan tier: {plan_tier}")
+
+
+def register_learner(*, user_id: str, email: str = "", full_name: str = "", plan_tier: str = "basics") -> dict[str, Any]:
+    canonical_plan = normalize_plan_tier(plan_tier)
+    profile = registered_users.get(user_id, {}).copy()
+    profile.update(
+        {
+            "user_id": user_id,
+            "email": email or profile.get("email", ""),
+            "full_name": full_name or profile.get("full_name", ""),
+            "plan_tier": canonical_plan,
+            "registered_at": profile.get("registered_at") or utcnow().isoformat(),
+        }
+    )
+    registered_users[user_id] = profile
+    return profile
+
+
+def get_registered_learner(user_id: str) -> dict[str, Any] | None:
+    return registered_users.get(user_id)
+
+
+def current_payments(user_id: str | None = None) -> list[dict[str, Any]]:
+    if user_id is None:
+        return list(payments)
+    return [payment for payment in payments if payment.get("user_id") == user_id]
+
+
+def create_payment_checkout(*, user_id: str, checkout_type: str, amount: float, plan_tier: str | None = None) -> dict[str, Any]:
+    payment_id = next_payment_id()
+    payment = {
+        "id": payment_id,
+        "user_id": user_id,
+        "type": checkout_type,
+        "amount": round(float(amount), 2),
+        "currency": "USD",
+        "status": "pending",
+        "reference": f"txn_{checkout_type}_{payment_id:04d}",
+        "plan_tier": normalize_plan_tier(plan_tier) if plan_tier else None,
+        "created_at": utcnow().isoformat(),
+        "updated_at": utcnow().isoformat(),
+    }
+    payments.append(payment)
+    return payment
+
+
+def finalize_payment_webhook(*, reference: str, status: str = "succeeded", metadata: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    payment = next((item for item in payments if item.get("reference") == reference), None)
+    if payment is None:
+        return None
+
+    payment["status"] = status
+    payment["metadata"] = metadata or {}
+    payment["updated_at"] = utcnow().isoformat()
+
+    if status == "succeeded":
+        plan_tier = payment.get("plan_tier") or "pro"
+        if payment.get("type") in {"plan_upgrade", "stage_unlock"} or plan_tier in {"pro", "ultra"}:
+            enroll_user(user_id=str(payment["user_id"]), plan_tier=normalize_plan_tier(str(plan_tier)))
+    return payment
+
+
+def confirmed_sections(user_id: str) -> set[int]:
+    return section_confirmations.setdefault(user_id, set())
+
+
+def confirm_section(user_id: str, section_id: int) -> dict[str, Any]:
+    confirmed_sections(user_id).add(section_id)
+    certification: dict[str, Any] | None = None
+    course = courses.get(1)
+    if course is not None and all(section.id in confirmed_sections(user_id) for section in course.outline):
+        certification = {
+            "id": f"cert-{user_id}",
+            "user_id": user_id,
+            "course_id": course.id,
+            "title": course.title,
+            "issued_at": utcnow().isoformat(),
+            "cert_url": f"https://nano-lab.local/certificates/{user_id}",
+        }
+        certifications[user_id] = [certification]
+
+    return {
+        "user_id": user_id,
+        "section_id": section_id,
+        "confirmed": True,
+        "confirmed_sections": sorted(confirmed_sections(user_id)),
+        "certificate": certification,
+    }
+
+
+def stage1_completion_state(user_id: str = "me") -> dict[str, Any]:
+    course = courses.get(1)
+    enrollment = get_my_enrollment(user_id)
+    section = course.outline[0] if course and course.outline else None
+    lesson_ids = [lesson.id for lesson in section.children] if section else []
+    completed = completed_lessons(user_id)
+    section_complete = bool(section) and all(lesson_id in completed for lesson_id in lesson_ids)
+    section_confirmed = bool(section) and section.id in confirmed_sections(user_id)
+    premium_plan = enrollment is not None and enrollment.plan_tier in {"pro", "ultra"}
+    stage2_unlocked = bool(section_complete and section_confirmed and premium_plan)
+    return {
+        "stage1_completed": section_complete,
+        "stage1_confirmed": section_confirmed,
+        "stage2_unlocked": stage2_unlocked,
+        "missing_lessons": [lesson_id for lesson_id in lesson_ids if lesson_id not in completed],
+        "plan_tier": enrollment.plan_tier if enrollment else None,
+    }
+
+
+def stage2_enrollment_state(user_id: str = "me") -> dict[str, Any]:
+    enrollment = stage2_enrollments.get(user_id)
+    evaluation = stage2_evaluations.get(user_id)
+    stage3_unlocked = bool(evaluation and evaluation.get("approved") and float(evaluation.get("score", 0)) >= 80)
+    return {
+        "enrolled": enrollment is not None,
+        "enrollment": enrollment,
+        "evaluation": evaluation,
+        "stage3_unlocked": stage3_unlocked,
+        "task_submissions": [submission for submission in stage2_task_submissions if submission.get("user_id") == user_id],
+    }
+
+
+def enroll_stage2(user_id: str, lab_partner_id: str | None = None) -> dict[str, Any]:
+    enrollment = stage2_enrollments.get(user_id)
+    selected_partner = next((partner for partner in stage2_lab_partners if partner["id"] == lab_partner_id), None)
+    if enrollment is None:
+        enrollment = {
+            "id": next_stage2_enrollment_id(),
+            "user_id": user_id,
+            "lab_partner_id": lab_partner_id,
+            "lab_partner_name": selected_partner["name"] if selected_partner else None,
+            "status": "active",
+            "start_date": utcnow().isoformat(),
+            "end_date": None,
+            "updated_at": utcnow().isoformat(),
+        }
+        stage2_enrollments[user_id] = enrollment
+    else:
+        enrollment["lab_partner_id"] = lab_partner_id
+        enrollment["lab_partner_name"] = selected_partner["name"] if selected_partner else enrollment.get("lab_partner_name")
+        enrollment["status"] = "active"
+        enrollment["updated_at"] = utcnow().isoformat()
+    return enrollment
+
+
+def submit_stage2_task(user_id: str, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    submission = {
+        "id": len(stage2_task_submissions) + 1,
+        "user_id": user_id,
+        "task_id": task_id,
+        "payload": payload,
+        "status": "submitted",
+        "submitted_at": utcnow().isoformat(),
+    }
+    stage2_task_submissions.append(submission)
+    return submission
+
+
+def evaluate_stage2(user_id: str, *, score: float, approved: bool, evaluator: str = "admin", comments: str = "") -> dict[str, Any]:
+    evaluation = {
+        "user_id": user_id,
+        "score": round(float(score), 2),
+        "approved": approved,
+        "evaluator": evaluator,
+        "comments": comments,
+        "evaluated_at": utcnow().isoformat(),
+    }
+    stage2_evaluations[user_id] = evaluation
+    return evaluation
+
+
+def stage3_unlock_state(user_id: str) -> bool:
+    return stage2_enrollment_state(user_id)["stage3_unlocked"]
+
+
+def certification_summary(user_id: str) -> list[dict[str, Any]]:
+    return certifications.get(user_id, [])
 
 
 def get_quiz(quiz_id: int) -> Quiz | None:
@@ -177,18 +382,19 @@ def get_my_enrollment(user_id: str = "me") -> Enrollment | None:
 
 
 def enroll_user(user_id: str = "me", plan_tier: PlanTier = "free", course_id: int = 1) -> Enrollment:
+    canonical_plan = normalize_plan_tier(plan_tier)
     enrollment = enrollments.get(user_id)
     if enrollment is None:
         enrollment = Enrollment(
             id=next_enrollment_id(),
             user_id=user_id,
             course_id=course_id,
-            plan_tier=plan_tier,
+            plan_tier=canonical_plan,
         )
         enrollments[user_id] = enrollment
         return enrollment
 
-    enrollment.plan_tier = plan_tier
+    enrollment.plan_tier = canonical_plan
     enrollment.course_id = course_id
     enrollment.updated_at = utcnow()
     return enrollment
@@ -224,11 +430,13 @@ def complete_lesson(user_id: str, lesson_id: int) -> dict[str, Any]:
 
 def stage1_state(user_id: str = "me") -> dict[str, Any]:
     locked = utcnow() >= stage1_deadline
+    completion = stage1_completion_state(user_id)
     return {
         "stage1_deadline": stage1_deadline.isoformat(),
         "stage1_locked": locked,
         "remaining_seconds": max(0, int((stage1_deadline - utcnow()).total_seconds())),
         "user_id": user_id,
+        **completion,
     }
 
 
@@ -254,6 +462,7 @@ def submit_stage3_application(payload: dict[str, Any]) -> dict[str, Any]:
         "name": payload.get("name", ""),
         "email": payload.get("email", ""),
         "cover_letter": payload.get("cover_letter", ""),
+        "user_id": payload.get("user_id", "me"),
         "submitted_at": utcnow().isoformat(),
     }
     stage3_applications.append(application)
@@ -269,7 +478,7 @@ def submit_stage2_partner_selection(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def lesson_is_locked(lesson: CourseLesson, enrollment: Enrollment | None) -> bool:
-    return lesson.freemium_locked and (enrollment is None or enrollment.plan_tier == "free")
+    return lesson.freemium_locked and (enrollment is None or enrollment.plan_tier == "basics")
 
 
 def course_lessons(course: Course) -> list[CourseLesson]:
@@ -318,6 +527,8 @@ def gamification_status(user_id: str = "me") -> dict[str, Any]:
         "streak": user_streak.get(user_id, 0),
         "badges": badge_ids,
         "stage_progress": course_progress(courses[1], user_id) if 1 in courses else None,
+        "stage1": stage1_state(user_id),
+        "stage2": stage2_enrollment_state(user_id),
     }
 
 
@@ -326,6 +537,9 @@ def enrollment_summary(user_id: str = "me") -> dict[str, Any]:
     course = get_course(enrollment.course_id) if enrollment else get_course(1)
     if course is None:
         return {"enrolled": False, "course": None, "plan_tier": None}
+
+    completed = completed_lessons(user_id)
+    confirmed = confirmed_sections(user_id)
 
     return {
         "enrolled": enrollment is not None,
@@ -340,12 +554,15 @@ def enrollment_summary(user_id: str = "me") -> dict[str, Any]:
                     "id": section.id,
                     "title": section.title,
                     "description": section.description,
+                    "completed": all(lesson.id in completed for lesson in section.children),
+                    "confirmed": section.id in confirmed,
                     "children": [
                         {
                             "id": lesson.id,
                             "title": lesson.title,
                             "description": lesson.description,
                             "locked": lesson_is_locked(lesson, enrollment),
+                            "completed": lesson.id in completed,
                             "quiz_id": lesson.quiz_id,
                             "assignment_id": lesson.assignment_id,
                         }
@@ -376,6 +593,22 @@ def lesson_summary(lesson_id: int, user_id: str = "me") -> dict[str, Any] | None
         "completed": lesson.id in completed_lessons(user_id),
         "xp_reward": lesson.xp_reward,
     }
+
+
+def jobs_summary(user_id: str = "me") -> dict[str, Any]:
+    return {
+        "jobs": stage3_jobs,
+        "applications": [application for application in stage3_applications if application.get("user_id") == user_id],
+        "unlocked": stage3_unlock_state(user_id),
+    }
+
+
+def application_summary(user_id: str = "me") -> list[dict[str, Any]]:
+    return [application for application in stage3_applications if application.get("user_id") == user_id]
+
+
+def certification_status(user_id: str = "me") -> list[dict[str, Any]]:
+    return certification_summary(user_id)
 
 
 def get_submission(submission_id: int) -> Submission | None:

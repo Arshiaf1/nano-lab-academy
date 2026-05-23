@@ -9,6 +9,7 @@ from .framework import HTTPException, Request, Router
 from .store import (
     assignments,
     courses,
+  current_payments,
     enrollments,
     get_assignment,
     get_quiz,
@@ -234,17 +235,15 @@ def _user_snapshot() -> list[dict[str, Any]]:
 def _payment_snapshot() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = [
         {
-            "id": 1,
-            "user_id": "me",
-            "type": "stage_unlock",
-            "amount": "$29.00",
-            "status": "succeeded",
-            "reference": "txn_stage_unlock_001",
+            **payment,
+            "amount": f"${float(payment['amount']):.2f}",
         }
+        for payment in current_payments()
     ]
+    base_index = len(rows)
     rows.extend(
         {
-            "id": index + 2,
+            "id": base_index + index + 1,
             "user_id": application.get("email") or application.get("name") or "guest",
             "type": "application_fee",
             "amount": "$0.00",
