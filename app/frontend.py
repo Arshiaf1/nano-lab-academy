@@ -334,7 +334,7 @@ def _page_shell(title: str, body: str, script: str = "") -> str:
       const pill = document.getElementById("learner-pill");
       if (pill) {{
         pill.hidden = false;
-        pill.textContent = `Learner ${userId}`;
+        pill.textContent = `Learner ${{userId}}`;
       }}
     }}
     setCurrentLearnerId(currentLearnerId());
